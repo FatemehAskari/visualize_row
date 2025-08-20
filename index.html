@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Logit-Lens Patch Viewer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { --accent:#e53935; --bg:#0f1115; --card:#151923; --text:#e6e9ef; --muted:#9aa3b2; --grid-gap:8px; --border:#22283a;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;}
+  header{padding:16px 20px;background:#0b0d11;border-bottom:1px solid #202735;position:sticky;top:0;z-index:5;}
+  h1{margin:0 0 6px 0;font-size:18px;}
+  .controls{display:flex;gap:12px;flex-wrap:wrap;align-items:center;}
+  .controls .row{display:flex;gap:8px;align-items:center;}
+  select{background:var(--card);color:var(--text);border:1px solid #2a3142;border-radius:10px;padding:8px 10px;font-size:14px;outline:none;}
+  main{padding:14px 20px 40px;}
+  .wrap{display:grid;grid-template-columns:1.2fr 1fr;gap:16px;}
+  .panel{background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;}
+  .panel h2{margin:0;padding:10px 12px;font-size:14px;border-bottom:1px solid var(--border);color:var(--muted);background:#111525;}
+  .panel .inner{padding:10px 12px;}
+
+  .img-stage{position:relative;width:100%;background:#0a0c11;border-radius:10px;overflow:hidden;}
+  .img-stage img{display:block;width:100%;height:auto;}
+  .img-stage canvas{position:absolute;left:0;top:0;/* we need hover events */ pointer-events:auto;}
+
+  /* Tooltip near cursor */
+  .tip{position:absolute;z-index:3;transform:translate(12px,12px);background:#0b0f15;border:1px solid #263048;border-radius:10px;padding:8px 10px;color:var(--text);min-width:180px;max-width:280px;box-shadow:0 8px 24px rgba(0,0,0,.35);display:none}
+  .tip .head{font-size:12px;color:var(--muted);margin-bottom:6px}
+  .tip ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+  .tip li{background:#0c1017;border:1px dashed #263048;border-radius:10px;padding:6px 8px}
+  .prob{font-variant-numeric:tabular-nums;color:#b8f0b8;margin-right:8px}
+  .piece{font-family:ui-monospace,Menlo,Consolas,monospace;background:#0b0f15;border:1px solid #1b2233;border-radius:8px;padding:3px 6px}
+  .digits-mini{margin-top:8px;border-top:1px solid #1b2233;padding-top:6px}
+  .digits-mini .row{display:flex;flex-wrap:wrap;gap:6px}
+  .digits-mini .badge{background:#0b0f15;border:1px solid #1b2233;border-radius:8px;padding:3px 6px;font-size:12px}
+  .digits-mini .k{color:#9ecbff;margin-right:6px}
+  .muted{color:var(--muted);}
+  .prompt{white-space:pre-wrap;color:var(--muted);font-size:12px;}
+
+  .patch-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:var(--grid-gap);}
+  .patch{background:#0d1017;border:1px solid var(--border);border-radius:10px;overflow:hidden;cursor:pointer;position:relative;transition:box-shadow .15s ease,transform .06s ease;}
+  .patch:hover{box-shadow:0 0 0 2px rgba(229,57,53,.35);transform:translateY(-1px);}
+  .patch canvas{display:block;width:100%;height:auto;}
+  .patch .lbl{position:absolute;left:6px;top:6px;background:rgba(0,0,0,.65);color:#fff;font-size:11px;padding:2px 6px;border-radius:6px;}
+
+  /* Top-K & digits (right panel): stacked lines "prob : token" */
+  .lines{list-style:none;margin:8px 0 0 0;padding:0;display:flex;flex-direction:column;gap:6px;}
+  .line{background:#0c1017;border:1px dashed #263048;border-radius:10px;padding:6px 8px;display:block}
+  .digits{margin-top:12px;border-top:1px solid var(--border);padding-top:10px}
+  .digits h3{margin:0 0 6px 0;font-size:13px;color:var(--muted)}
+  .digits .line{background:#0b0f15}
+  .key{display:inline-block;width:10px;color:#9ecbff;margin-right:8px;text-align:right}
+
+  @media (max-width:1100px){.wrap{grid-template-columns:1fr;}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Logit-Lens Patch Viewer</h1>
+  <div class="controls">
+    <div class="row">
+      <label for="selImage" class="muted">Image/Report:</label>
+      <select id="selImage"></select>
+    </div>
+    <div class="row">
+      <label for="selLayer" class="muted">Layer:</label>
+      <select id="selLayer"></select>
+    </div>
+    <div class="row muted" id="info"></div>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+    <div class="panel">
+      <h2>Image</h2>
+      <div class="inner">
+        <div class="img-stage" id="imgStage">
+          <img id="mainImg" alt="image"/>
+          <canvas id="overlay"></canvas>
+          <!-- hover tooltip -->
+          <div id="hoverTip" class="tip">
+            <div class="head" id="tipHead">Patch</div>
+            <ul id="tipTopk"></ul>
+            <div class="digits-mini" id="tipDigits">
+              <div class="row" id="tipDigitsRow"></div>
+            </div>
+          </div>
+        </div>
+        <div class="muted" style="margin-top:8px;">Hover the image to preview a patch; click a patch tile below to lock selection in the right panel.</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Selected Patch</h2>
+      <div class="inner">
+        <div id="selInfo" class="muted">No patch selected yet.</div>
+
+        <div id="topkSection" style="margin-top:8px;">
+          <div class="muted">Top-5 (prob : token)</div>
+          <ul id="topkList" class="lines"></ul>
+        </div>
+
+        <div id="digitsSection" class="digits">
+          <h3>Digits (renorm)</h3>
+          <ul id="digitsList" class="lines"></ul>
+        </div>
+
+        <hr style="border-color:#22283a;margin:12px 0;">
+        <div class="muted">Prompt:</div>
+        <div id="promptBox" class="prompt"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:16px;">
+    <h2>Patches</h2>
+    <div class="inner">
+      <div id="patchGrid" class="patch-grid"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const INDEX_JSON_URL = 'index.json';
+
+let INDEX = [];
+let CURRENT = null;
+let CUR_IMAGE_ITEM = null;
+let DISPLAY_SCALE = { sx: 1, sy: 1 };
+let LAYER_MAP = null;   // fast lookup: [row][col] -> patch
+
+function $(id){ return document.getElementById(id); }
+function pieceDisplay(s){ if(s===null||s===undefined) return '∅'; if(s==='') return '⟂ (empty)'; return s.replace(/ /g,'␠'); }
+
+async function loadIndex(){
+  const res = await fetch(INDEX_JSON_URL);
+  if(!res.ok) throw new Error('Failed to load index.json');
+  INDEX = await res.json();
+}
+
+function fillImageSelect(){
+  const sel = $('selImage'); sel.innerHTML = '';
+  INDEX.forEach((it,i)=>{
+    const o=document.createElement('option'); o.value=i; o.textContent=it.name; sel.appendChild(o);
+  });
+  if(INDEX.length) sel.value='0';
+}
+
+function fillLayerSelect(){
+  const sel = $('selLayer'); sel.innerHTML='';
+  (CURRENT.layers||[]).forEach(L=>{
+    const o=document.createElement('option');
+    o.value=String(L.layer_idx);
+    o.textContent=`Layer ${L.layer_idx}`;
+    sel.appendChild(o);
+  });
+  if((CURRENT.layers||[]).length) sel.value=String(CURRENT.layers[0].layer_idx);
+  rebuildLayerMap();
+}
+
+function rebuildLayerMap(){
+  LAYER_MAP = null;
+  const v=CURRENT.vision;
+  const layerIdx=parseInt($('selLayer').value,10);
+  const L=(CURRENT.layers||[]).find(e=>e.layer_idx===layerIdx);
+  if(!L) return;
+  LAYER_MAP = Array.from({length:v.grid_h},()=>Array(v.grid_w).fill(null));
+  L.patches.forEach(p=>{ if(p && p.row!=null && p.col!=null){ LAYER_MAP[p.row][p.col]=p; }});
+}
+
+function setupOverlay(){
+  const img=$('mainImg'), cvs=$('overlay');
+  cvs.width=img.clientWidth; cvs.height=img.clientHeight;
+  const v=CURRENT.vision;
+  DISPLAY_SCALE.sx = img.clientWidth  / v.resized_w;
+  DISPLAY_SCALE.sy = img.clientHeight / v.resized_h;
+  const ctx=cvs.getContext('2d'); ctx.clearRect(0,0,cvs.width,cvs.height);
+}
+
+function highlightPatch(bbox, drawGrid=false){
+  const cvs=$('overlay'), ctx=cvs.getContext('2d');
+  const v=CURRENT.vision;
+  ctx.clearRect(0,0,cvs.width,cvs.height);
+
+  // optional light grid
+  if(drawGrid){
+    ctx.strokeStyle='rgba(255,255,255,0.06)';
+    ctx.lineWidth=1;
+    for(let r=1;r<v.grid_h;r++){
+      const y=r*v.merged_patch_px*DISPLAY_SCALE.sy;
+      ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(cvs.width,y); ctx.stroke();
+    }
+    for(let c=1;c<v.grid_w;c++){
+      const x=c*v.merged_patch_px*DISPLAY_SCALE.sx;
+      ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,cvs.height); ctx.stroke();
+    }
+  }
+
+  if(!bbox) return;
+  const [x0,y0,x1,y1]=bbox;
+  const x=x0*DISPLAY_SCALE.sx, y=y0*DISPLAY_SCALE.sy;
+  const w=(x1-x0)*DISPLAY_SCALE.sx, h=(y1-y0)*DISPLAY_SCALE.sy;
+  ctx.lineWidth=2; ctx.strokeStyle='var(--accent)'; ctx.strokeRect(x,y,w,h);
+  ctx.fillStyle='rgba(229,57,53,.15)'; ctx.fillRect(x,y,w,h);
+}
+
+function renderTopKPanel(patch){
+  const info=$('selInfo'), list=$('topkList'), dlist=$('digitsList');
+  list.innerHTML=''; dlist.innerHTML='';
+  if(!patch){ info.textContent='No patch selected yet.'; return; }
+  info.textContent=`Patch (row=${patch.row}, col=${patch.col})`;
+
+  (patch.topk||[]).forEach(k=>{
+    const li=document.createElement('li'); li.className='line';
+    const prob=document.createElement('span'); prob.className='prob'; prob.textContent=Number(k.prob).toFixed(6);
+    const sep=document.createElement('span'); sep.textContent=' : ';
+    const piece=document.createElement('span'); piece.className='piece'; piece.textContent=pieceDisplay(k.piece);
+    li.appendChild(prob); li.appendChild(sep); li.appendChild(piece);
+    list.appendChild(li);
+  });
+
+  if(patch.digits_renorm){
+    for(let d=0; d<=9; d++){
+      const key=String(d);
+      const val = Number(patch.digits_renorm[key]||0).toFixed(6);
+      const li=document.createElement('li'); li.className='line';
+      const kspan=document.createElement('span'); kspan.className='key'; kspan.textContent=key;
+      const colon=document.createElement('span'); colon.textContent=' : ';
+      const prob=document.createElement('span'); prob.className='prob'; prob.textContent=val;
+      li.appendChild(kspan); li.appendChild(colon); li.appendChild(prob);
+      dlist.appendChild(li);
+    }
+  }
+}
+
+/* ---------- Hover tooltip on the image ---------- */
+function showTipForPatch(patch, clientX, clientY){
+  const tip=$('hoverTip'), list=$('tipTopk'), row=$('tipDigitsRow'), head=$('tipHead');
+  if(!patch){ tip.style.display='none'; return; }
+  head.textContent = `Patch r=${patch.row}, c=${patch.col}`;
+  list.innerHTML=''; row.innerHTML='';
+
+  (patch.topk||[]).forEach(k=>{
+    const li=document.createElement('li');
+    const prob=document.createElement('span'); prob.className='prob'; prob.textContent=Number(k.prob).toFixed(4);
+    const sep=document.createElement('span'); sep.textContent=' : ';
+    const piece=document.createElement('span'); piece.className='piece'; piece.textContent=pieceDisplay(k.piece);
+    li.appendChild(prob); li.appendChild(sep); li.appendChild(piece);
+    list.appendChild(li);
+  });
+
+  if(patch.digits_renorm){
+    for(let d=0; d<=9; d++){
+      const badge=document.createElement('span'); badge.className='badge';
+      const k=document.createElement('span'); k.className='k'; k.textContent=d+':';
+      const v=document.createElement('span'); v.className='prob'; v.textContent=Number(patch.digits_renorm[String(d)]||0).toFixed(3);
+      badge.appendChild(k); badge.appendChild(v);
+      row.appendChild(badge);
+    }
+  }
+
+  tip.style.left = clientX + 'px';
+  tip.style.top  = clientY + 'px';
+  tip.style.display='block';
+}
+
+function patchFromCursor(evt){
+  if(!CURRENT || !LAYER_MAP) return null;
+  const img = $('mainImg');
+  const rect = img.getBoundingClientRect();
+  const x = evt.clientX - rect.left;
+  const y = evt.clientY - rect.top;
+
+  const v = CURRENT.vision;
+  const xr = x / DISPLAY_SCALE.sx;   // back to resized canvas
+  const yr = y / DISPLAY_SCALE.sy;
+
+  let col = Math.floor(xr / v.merged_patch_px);
+  let row = Math.floor(yr / v.merged_patch_px);
+  // clamp
+  col = Math.max(0, Math.min(v.grid_w-1, col));
+  row = Math.max(0, Math.min(v.grid_h-1, row));
+
+  const p = LAYER_MAP[row]?.[col] || null;
+  return p;
+}
+
+function attachHoverHandlers(){
+  const cvs=$('overlay');
+  cvs.addEventListener('mouseenter', (e)=>{
+    // draw grid once when entering
+    highlightPatch(null, /*drawGrid=*/true);
+  });
+  cvs.addEventListener('mousemove', (e)=>{
+    const p = patchFromCursor(e);
+    if(!p){ $('hoverTip').style.display='none'; return; }
+    highlightPatch(p.bbox_resized, /*drawGrid=*/true);
+    showTipForPatch(p, e.clientX, e.clientY);
+  });
+  cvs.addEventListener('mouseleave', ()=>{
+    $('hoverTip').style.display='none';
+    highlightPatch(null, /*drawGrid=*/false);
+  });
+  // optional: clicking on image also locks selection in right panel
+  cvs.addEventListener('click', (e)=>{
+    const p = patchFromCursor(e);
+    if(p){ renderTopKPanel(p); }
+  });
+}
+/* ----------------------------------------------- */
+
+function renderPatchGrid(){
+  const container=$('patchGrid'); container.innerHTML='';
+  const img=$('mainImg');
+  const natW=img.naturalWidth||img.width, natH=img.naturalHeight||img.height;
+  const v=CURRENT.vision, sx=natW/v.resized_w, sy=natH/v.resized_h;
+
+  const layerIdx=parseInt($('selLayer').value,10);
+  const L=(CURRENT.layers||[]).find(e=>e.layer_idx===layerIdx);
+  if(!L) return;
+
+  L.patches.forEach(p=>{
+    const tile=document.createElement('div'); tile.className='patch';
+    const lbl=document.createElement('div'); lbl.className='lbl'; lbl.textContent=`${p.row},${p.col}`;
+    const can=document.createElement('canvas'); const ctx=can.getContext('2d');
+    const TW=96, TH=96; can.width=TW; can.height=TH;
+
+    const [x0,y0,x1,y1]=p.bbox_resized;
+    const sx0=x0*sx, sy0=y0*sy, sw=(x1-x0)*sx, sh=(y1-y0)*sy;
+    const tmp=new Image(); tmp.src=img.src;
+    const draw=()=>{ try{ ctx.drawImage(tmp, sx0, sy0, sw, sh, 0, 0, TW, TH); ctx.lineWidth=2; ctx.strokeStyle='var(--accent)'; ctx.strokeRect(1,1,TW-2,TH-2);}catch{} };
+    tmp.onload=draw; if(tmp.complete) draw();
+
+    tile.appendChild(can); tile.appendChild(lbl); container.appendChild(tile);
+    tile.addEventListener('click', ()=>{ highlightPatch(p.bbox_resized, true); renderTopKPanel(p); });
+  });
+
+  highlightPatch(null,false);
+  renderTopKPanel(null);
+}
+
+async function onImageChange(){
+  const idx=parseInt($('selImage').value,10);
+  CUR_IMAGE_ITEM = INDEX[idx];
+  $('promptBox').textContent = CUR_IMAGE_ITEM?.prompt || '';
+
+  // load JSON
+  const r = await fetch(CUR_IMAGE_ITEM.json); CURRENT = await r.json();
+
+  // set image (must await load for sizing)
+  const img=$('mainImg'); img.src = CUR_IMAGE_ITEM.image || '';
+  await img.decode().catch(()=>{});
+  $('info').textContent = `grid ${CURRENT.vision.grid_h}×${CURRENT.vision.grid_w} · resized ${CURRENT.vision.resized_w}×${CURRENT.vision.resized_h}`;
+
+  setupOverlay();
+  fillLayerSelect();
+  renderPatchGrid();
+}
+
+function onLayerChange(){
+  rebuildLayerMap();
+  renderPatchGrid();
+}
+
+async function boot(){
+  await loadIndex();
+  fillImageSelect();
+  $('selImage').addEventListener('change', onImageChange);
+  $('selLayer').addEventListener('change', onLayerChange);
+  $('mainImg').addEventListener('load', setupOverlay);
+  window.addEventListener('resize', setupOverlay);
+  attachHoverHandlers();
+  await onImageChange();
+}
+boot().catch(e=>{ console.error(e); alert('Init failed; see console.'); });
+</script>
+</body>
+</html>
